@@ -1084,7 +1084,7 @@ static int bink_decode_plane(BinkContext *c, AVFrame *frame, GetBitContext *gb,
         for (bx = 0; bx < bw; bx++, dst += 8, prev += 8) {
             blk = get_value(c, BINK_SRC_BLOCK_TYPES);
             // 16x16 block type on odd line means part of the already decoded block, so skip it
-            if (((by & 1) || (bx & 1)) && blk == SCALED_BLOCK) {
+            if ((by & 1) && blk == SCALED_BLOCK) {
                 bx++;
                 dst  += 8;
                 prev += 8;
@@ -1381,8 +1381,10 @@ static av_cold int decode_init(AVCodecContext *avctx)
     ff_hpeldsp_init(&c->hdsp, avctx->flags);
     ff_binkdsp_init(&c->binkdsp);
 
-    if ((ret = init_bundles(c)) < 0)
+    if ((ret = init_bundles(c)) < 0) {
+        free_bundles(c);
         return ret;
+    }
 
     if (c->version == 'b') {
         if (!binkb_initialised) {
@@ -1422,5 +1424,4 @@ AVCodec ff_bink_decoder = {
     .decode         = decode_frame,
     .flush          = flush,
     .capabilities   = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

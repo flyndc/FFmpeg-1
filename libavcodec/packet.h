@@ -282,6 +282,24 @@ enum AVPacketSideDataType {
      */
     AV_PKT_DATA_DOVI_CONF,
 
+
+    /**
+     * Provides the splice PTS in the same scte-35 stream time scale to be able to
+     * recaluclate splice timestamp for new stream time
+     */
+    AV_PKT_DATA_SPLICE_OFFSET_PTS,
+
+    /**
+     * Provides the splice duration list in the same scte-35 stream time scale to be able to
+     * recaluclate splice timestamp for new stream time
+     */
+    AV_PKT_DATA_SPLICE_BOUNDARY,
+
+    /**
+     * Signals the packet should not be decoded but previously stored decoded frame should be used.
+     */
+    AV_PKT_DATA_REDUNDANT,
+
     /**
      * The number of side data types.
      * This is not part of the public API/ABI in the sense that it may
@@ -405,6 +423,12 @@ typedef struct AVPacket {
  * be discarded by the decoder.  I.e. Non-reference frames.
  */
 #define AV_PKT_FLAG_DISPOSABLE 0x0010
+
+/**
+ * Flag is used to indicate packets that doesn't represent any data but is used
+ * for filling gaps in timelines or unblock input for sparsed streams like SCTE-35
+ */
+#define AV_PKT_FLAG_FILLER 0x1000
 
 enum AVSideDataParamChangeFlags {
     AV_SIDE_DATA_PARAM_CHANGE_CHANNEL_COUNT  = 0x0001,

@@ -40,6 +40,8 @@
 #include "rdft.h"
 #include "wma_freqs.h"
 
+static float quant_table[96];
+
 #define MAX_CHANNELS 2
 #define BINK_BLOCK_MAX_SIZE (MAX_CHANNELS << 11)
 
@@ -56,7 +58,6 @@ typedef struct BinkAudioContext {
     float root;
     DECLARE_ALIGNED(32, FFTSample, coeffs)[BINK_BLOCK_MAX_SIZE];
     float previous[MAX_CHANNELS][BINK_BLOCK_MAX_SIZE / 16];  ///< coeffs from previous audio block
-    float quant_table[96];
     AVPacket *pkt;
     union {
         RDFTContext rdft;
@@ -115,7 +116,7 @@ static av_cold int decode_init(AVCodecContext *avctx)
         s->root = s->frame_len / (sqrt(s->frame_len) * 32768.0);
     for (i = 0; i < 96; i++) {
         /* constant is result of 0.066399999/log10(M_E) */
-        s->quant_table[i] = expf(i * 0.15289164787221953823f) * s->root;
+        quant_table[i] = expf(i * 0.15289164787221953823f) * s->root;
     }
 
     /* calculate number of bands */
@@ -196,7 +197,7 @@ static int decode_block(BinkAudioContext *s, float **out, int use_dct)
             return AVERROR_INVALIDDATA;
         for (i = 0; i < s->num_bands; i++) {
             int value = get_bits(gb, 8);
-            quant[i]  = s->quant_table[FFMIN(value, 95)];
+            quant[i]  = quant_table[FFMIN(value, 95)];
         }
 
         k = 0;

@@ -226,10 +226,8 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
     if (res < 0) {
         if (res == AVERROR(EINVAL))
             res = AVERROR_INVALIDDATA;
-        if (res != AVERROR(EAGAIN)) {
-            dav1d_data_unref(data);
+        if (res != AVERROR(EAGAIN))
             return res;
-        }
     }
 
     res = dav1d_get_picture(dav1d->c, p);

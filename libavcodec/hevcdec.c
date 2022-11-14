@@ -785,11 +785,6 @@ static int hls_slice_header(HEVCContext *s)
         if (s->ps.pps->pic_slice_level_chroma_qp_offsets_present_flag) {
             sh->slice_cb_qp_offset = get_se_golomb(gb);
             sh->slice_cr_qp_offset = get_se_golomb(gb);
-            if (sh->slice_cb_qp_offset < -12 || sh->slice_cb_qp_offset > 12 ||
-                sh->slice_cr_qp_offset < -12 || sh->slice_cr_qp_offset > 12) {
-                av_log(s->avctx, AV_LOG_ERROR, "Invalid slice cx qp offset.\n");
-                return AVERROR_INVALIDDATA;
-            }
         } else {
             sh->slice_cb_qp_offset = 0;
             sh->slice_cr_qp_offset = 0;
@@ -3241,7 +3236,7 @@ static int hevc_decode_frame(AVCodecContext *avctx, void *data, int *got_output,
         }
     } else {
         /* verify the SEI checksum */
-        if (avctx->err_recognition & AV_EF_CRCCHECK && s->ref && s->is_decoded &&
+        if (avctx->err_recognition & AV_EF_CRCCHECK && s->is_decoded &&
             s->sei.picture_hash.is_md5) {
             ret = verify_md5(s, s->ref->frame);
             if (ret < 0 && avctx->err_recognition & AV_EF_EXPLODE) {

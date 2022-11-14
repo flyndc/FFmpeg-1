@@ -16,6 +16,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <zmq.h>
+
+#include "libavutil/avutil.h"
 #include "libavutil/avstring.h"
 #include "libavutil/display.h"
 #include "libavutil/common.h"
@@ -85,6 +88,13 @@ typedef struct H264MetadataContext {
     int flip;
 
     int level;
+
+    void *zmq;
+    void *responder;
+    char *bind_address;
+
+    int delete_cc;
+    int has_cc;
 } H264MetadataContext;
 
 
@@ -319,6 +329,59 @@ static int h264_metadata_update_side_data(AVBSFContext *bsf, AVPacket *pkt)
     return 0;
 }
 
+static void h264_metadata_zmq_loop(H264MetadataContext *ctx){
+    while (1) {
+        char *recv_buf = NULL, *send_buf = NULL;
+        int recv_buf_size = 0;
+        ZMQCommand cmd = {0};
+        int ret;
+
+        /* receive command */
+        if (zmq_recv_msg(ctx, ctx->responder, &recv_buf, &recv_buf_size) < 0)
+            break;
+
+        /* parse command */
+        if (zmq_parse_command(ctx, &cmd, recv_buf) < 0) {
+            av_log(ctx, AV_LOG_ERROR, "Could not parse command from %s\n", recv_buf);
+            goto end;
+        }
+
+        /* process command */
+        av_log(ctx, AV_LOG_VERBOSE,
+               "Processing command target:%s command:%s arg:%s\n",
+               cmd.target, cmd.command, cmd.arg);
+
+        if(strcmp(cmd.command, "has_cc") == 0){
+            send_buf = av_asprintf("%d", ctx->has_cc);
+        } else if (strcmp(cmd.command, "delete_cc") == 0 ){
+            ctx->delete_cc = strcmp(cmd.arg, "true") == 0 || strcmp(cmd.arg, "1") == 0 || strcmp(cmd.arg, "yes") == 0;
+
+            send_buf = av_asprintf("%d", ctx->delete_cc);
+        } else {
+            av_log(ctx, AV_LOG_WARNING,
+                   "Unknown command target:%s command:%s arg:%s\n",
+                   cmd.target, cmd.command, cmd.arg);
+        }
+
+        if (!send_buf) {
+            ret = AVERROR(ENOMEM);
+            goto end;
+        }
+        av_log(ctx, AV_LOG_VERBOSE, "Sending command reply \n%s\n", send_buf);
+        if (ret = zmq_send(ctx->responder, send_buf, strlen(send_buf), 0) == -1)
+            av_log(ctx, AV_LOG_ERROR, "Failed to send reply: %s\n", zmq_strerror(ret));
+
+        end:
+        av_freep(&send_buf);
+        av_freep(&recv_buf);
+        recv_buf_size = 0;
+        av_freep(&cmd.target);
+        av_freep(&cmd.command);
+        av_freep(&cmd.arg);
+    }
+}
+
+
 static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
 {
     H264MetadataContext *ctx = bsf->priv_data;
@@ -461,6 +524,28 @@ static int h264_metadata_filter(AVBSFContext *bsf, AVPacket *pkt)
                    "must be \"UUID+string\".\n");
             err = AVERROR(EINVAL);
             goto fail;
+        }
+    }
+
+    if(ctx->zmq){
+        h264_metadata_zmq_loop(ctx);
+
+        for (i = au->nb_units - 1; i >= 0; i--) {
+            if (au->units[i].type == H264_NAL_SEI) {
+                H264RawSEI *sei = au->units[i].content;
+
+                for (j = sei->payload_count - 1; j >= 0; j--) {
+                    if (sei->payload[j].payload_type == H264_SEI_TYPE_USER_DATA_REGISTERED){
+
+                        //H264RawSEIUserDataRegistered cc = sei->payload[j].payload.user_data_registered;
+                        ctx->has_cc = 1;
+                        if(ctx->delete_cc){
+                            ff_cbs_h264_delete_sei_message(ctx->cbc, au,
+                                                           &au->units[i], j);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -655,6 +740,10 @@ static int h264_metadata_init(AVBSFContext *bsf)
     }
 
     err = 0;
+
+    if (ctx->bind_address) {
+        err = zmq_init_routine(ctx, &ctx->zmq, &ctx->responder, ctx->bind_address);
+    }
 fail:
     ff_cbs_fragment_reset(ctx->cbc, au);
     return err;
@@ -664,6 +753,8 @@ static void h264_metadata_close(AVBSFContext *bsf)
 {
     H264MetadataContext *ctx = bsf->priv_data;
 
+    zmq_deinit_routine(ctx->zmq, ctx->responder);
+
     ff_cbs_fragment_free(ctx->cbc, &ctx->access_unit);
     ff_cbs_close(&ctx->cbc);
 }
@@ -671,6 +762,8 @@ static void h264_metadata_close(AVBSFContext *bsf)
 #define OFFSET(x) offsetof(H264MetadataContext, x)
 #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_BSF_PARAM)
 static const AVOption h264_metadata_options[] = {
+    {"zmq", "set bind address", OFFSET(bind_address), AV_OPT_TYPE_STRING, {.str = "tcp://*:5555"}, 0, 0, FLAGS},
+
     { "aud", "Access Unit Delimiter NAL units",
         OFFSET(aud), AV_OPT_TYPE_INT,
         { .i64 = PASS }, PASS, REMOVE, FLAGS, "aud" },

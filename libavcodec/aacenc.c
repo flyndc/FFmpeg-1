@@ -28,7 +28,6 @@
  *              TODOs:
  * add sane pulse detection
  ***********************************/
-#include <float.h>
 
 #include "libavutil/libm.h"
 #include "libavutil/thread.h"
@@ -857,7 +856,7 @@ static int aac_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
                 /* Not so fast though */
                 ratio = sqrtf(ratio);
             }
-            s->lambda = av_clipf(s->lambda * ratio, FLT_EPSILON, 65536.f);
+            s->lambda = FFMIN(s->lambda * ratio, 65536.f);
 
             /* Keep iterating if we must reduce and lambda is in the sky */
             if (ratio > 0.9f && ratio < 1.1f) {
@@ -902,7 +901,7 @@ static av_cold int aac_encode_end(AVCodecContext *avctx)
 {
     AACEncContext *s = avctx->priv_data;
 
-    av_log(avctx, AV_LOG_INFO, "Qavg: %.3f\n", s->lambda_count ? s->lambda_sum / s->lambda_count : NAN);
+    av_log(avctx, AV_LOG_INFO, "Qavg: %.3f\n", s->lambda_sum / s->lambda_count);
 
     ff_mdct_end(&s->mdct1024);
     ff_mdct_end(&s->mdct128);

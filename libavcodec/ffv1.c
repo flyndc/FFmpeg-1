@@ -115,11 +115,12 @@ av_cold int ff_ffv1_init_slices_state(FFV1Context *f)
 
 av_cold int ff_ffv1_init_slice_contexts(FFV1Context *f)
 {
-    int i, max_slice_count = f->num_h_slices * f->num_v_slices;
+    int i;
 
-    av_assert0(max_slice_count > 0);
+    f->max_slice_count = f->num_h_slices * f->num_v_slices;
+    av_assert0(f->max_slice_count > 0);
 
-    for (i = 0; i < max_slice_count; i++) {
+    for (i = 0; i < f->max_slice_count; i++) {
         int sx          = i % f->num_h_slices;
         int sy          = i / f->num_h_slices;
         int sxs         = f->avctx->width  *  sx      / f->num_h_slices;
@@ -151,7 +152,6 @@ av_cold int ff_ffv1_init_slice_contexts(FFV1Context *f)
             goto memfail;
         }
     }
-    f->max_slice_count = max_slice_count;
     return 0;
 
 memfail:

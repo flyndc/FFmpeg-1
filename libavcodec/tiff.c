@@ -79,7 +79,6 @@ typedef struct TiffContext {
     int fill_order;
     uint32_t res[4];
     int is_thumbnail;
-    unsigned last_tag;
 
     int is_bayer;
     uint8_t pattern[4];
@@ -592,7 +591,6 @@ static int tiff_unpack_strip(TiffContext *s, AVFrame *p, uint8_t *dst, int strid
     if (s->is_bayer) {
         av_assert0(width == (s->bpp * s->width + 7) >> 3);
     }
-    av_assert0(!(s->is_bayer && is_yuv));
     if (p->format == AV_PIX_FMT_GRAY12) {
         av_fast_padded_malloc(&s->yuv_line, &s->yuv_line_size, width);
         if (s->yuv_line == NULL) {
@@ -676,8 +674,6 @@ static int tiff_unpack_strip(TiffContext *s, AVFrame *p, uint8_t *dst, int strid
             av_log(s->avctx, AV_LOG_ERROR, "More than one DNG JPEG strips unsupported\n");
             return AVERROR_PATCHWELCOME;
         }
-        if (!s->is_bayer)
-            return AVERROR_PATCHWELCOME;
         if ((ret = dng_decode_strip(s->avctx, p)) < 0)
             return ret;
         return 0;
@@ -713,7 +709,7 @@ static int tiff_unpack_strip(TiffContext *s, AVFrame *p, uint8_t *dst, int strid
             if (is_dng) {
                 int is_u16, pixel_size_bytes, pixel_size_bits, elements;
 
-                is_u16 = (s->bpp / s->bppcount > 8);
+                is_u16 = (s->bpp > 8);
                 pixel_size_bits = (is_u16 ? 16 : 8);
                 pixel_size_bytes = (is_u16 ? sizeof(uint16_t) : sizeof(uint8_t));
 
@@ -921,11 +917,6 @@ static int dng_decode_jpeg(AVCodecContext *avctx, AVFrame *frame,
     is_u16 = (s->bpp > 8);
 
     /* Copy the outputted tile's pixels from 'jpgframe' to 'frame' (final buffer) */
-
-    if (s->jpgframe->width  != s->avctx_mjpeg->width  ||
-        s->jpgframe->height != s->avctx_mjpeg->height ||
-        s->jpgframe->format != s->avctx_mjpeg->pix_fmt)
-        return AVERROR_INVALIDDATA;
 
     /* See dng_blit for explanation */
     if (s->avctx_mjpeg->width  == w * 2 &&
@@ -1261,12 +1252,6 @@ static int tiff_decode_tag(TiffContext *s, AVFrame *frame)
     if (ret < 0) {
         goto end;
     }
-    if (tag <= s->last_tag)
-        return AVERROR_INVALIDDATA;
-
-    // We ignore TIFF_STRIP_SIZE as it is sometimes in the logic but wrong order around TIFF_STRIP_OFFS
-    if (tag != TIFF_STRIP_SIZE)
-        s->last_tag = tag;
 
     off = bytestream2_tell(&s->gb);
     if (count == 1) {
@@ -1305,7 +1290,7 @@ static int tiff_decode_tag(TiffContext *s, AVFrame *frame)
         s->height = value;
         break;
     case TIFF_BPP:
-        if (count > 5 || count <= 0) {
+        if (count > 5U) {
             av_log(s->avctx, AV_LOG_ERROR,
                    "This format is not supported (bpp=%d, %d components)\n",
                    value, count);
@@ -1336,9 +1321,9 @@ static int tiff_decode_tag(TiffContext *s, AVFrame *frame)
                    "Samples per pixel requires a single value, many provided\n");
             return AVERROR_INVALIDDATA;
         }
-        if (value > 5 || value <= 0) {
+        if (value > 5U) {
             av_log(s->avctx, AV_LOG_ERROR,
-                   "Invalid samples per pixel %d\n", value);
+                   "Samples per pixel %d is too large\n", value);
             return AVERROR_INVALIDDATA;
         }
         if (s->bppcount == 1)
@@ -1449,9 +1434,7 @@ static int tiff_decode_tag(TiffContext *s, AVFrame *frame)
             s->sub_ifd = ff_tget(&s->gb, TIFF_LONG, s->le); /** Only get the first SubIFD */
         break;
     case DNG_LINEARIZATION_TABLE:
-        if (count > FF_ARRAY_ELEMS(s->dng_lut))
-            return AVERROR_INVALIDDATA;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < FFMIN(count, 1 << s->bpp); i++)
             s->dng_lut[i] = ff_tget(&s->gb, type, s->le);
         break;
     case DNG_BLACK_LEVEL:
@@ -1786,7 +1769,7 @@ static int decode_frame(AVCodecContext *avctx,
     TiffContext *const s = avctx->priv_data;
     AVFrame *const p = data;
     ThreadFrame frame = { .f = data };
-    unsigned off, last_off = 0;
+    unsigned off, last_off;
     int le, ret, plane, planes;
     int i, j, entries, stride;
     unsigned soff, ssize;
@@ -1822,7 +1805,6 @@ again:
     s->is_tiled    = 0;
     s->is_jpeg     = 0;
     s->cur_page    = 0;
-    s->last_tag    = 0;
 
     for (i = 0; i < 65536; i++)
         s->dng_lut[i] = i;
@@ -1851,6 +1833,7 @@ again:
     /** whether we should process this multi-page IFD's next page */
     retry_for_page = s->get_page && s->cur_page + 1 < s->get_page;  // get_page is 1-indexed
 
+    last_off = off;
     if (retry_for_page) {
         // set offset to the next IFD
         off = ff_tget_long(&s->gb, le);
@@ -1868,7 +1851,6 @@ again:
             avpriv_request_sample(s->avctx, "non increasing IFD offset\n");
             return AVERROR_INVALIDDATA;
         }
-        last_off = off;
         if (off >= UINT_MAX - 14 || avpkt->size < off + 14) {
             av_log(avctx, AV_LOG_ERROR, "IFD offset is greater than image size\n");
             return AVERROR_INVALIDDATA;
@@ -1901,14 +1883,8 @@ again:
     if (is_dng) {
         int bps;
 
-        if (s->bpp % s->bppcount)
-            return AVERROR_INVALIDDATA;
-        bps = s->bpp / s->bppcount;
-        if (bps < 8 || bps > 32)
-            return AVERROR_INVALIDDATA;
-
         if (s->white_level == 0)
-            s->white_level = (1LL << bps) - 1; /* Default value as per the spec */
+            s->white_level = (1 << s->bpp) - 1; /* Default value as per the spec */
 
         if (s->white_level <= s->black_level) {
             av_log(avctx, AV_LOG_ERROR, "BlackLevel (%"PRId32") must be less than WhiteLevel (%"PRId32")\n",
@@ -1916,6 +1892,11 @@ again:
             return AVERROR_INVALIDDATA;
         }
 
+        if (s->bpp % s->bppcount)
+            return AVERROR_INVALIDDATA;
+        bps = s->bpp / s->bppcount;
+        if (bps < 8 || bps > 32)
+            return AVERROR_INVALIDDATA;
         if (s->planar)
             return AVERROR_PATCHWELCOME;
     }

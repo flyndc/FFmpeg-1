@@ -129,7 +129,7 @@ static int alloc_table(VLC *vlc, int size, int use_static)
 
 typedef struct VLCcode {
     uint8_t bits;
-    VLC_TYPE symbol;
+    uint16_t symbol;
     /** codeword, with the first bit-to-be-read in the msb
      * (even if intended for a little-endian bitstream reader) */
     uint32_t code;

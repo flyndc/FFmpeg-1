@@ -292,16 +292,6 @@ void avcodec_align_dimensions2(AVCodecContext *s, int *width, int *height,
             w_align = 8;
             h_align = 8;
         }
-        if (s->codec_id == AV_CODEC_ID_MJPEG   ||
-            s->codec_id == AV_CODEC_ID_MJPEGB  ||
-            s->codec_id == AV_CODEC_ID_LJPEG   ||
-            s->codec_id == AV_CODEC_ID_SMVJPEG ||
-            s->codec_id == AV_CODEC_ID_AMV     ||
-            s->codec_id == AV_CODEC_ID_SP5X    ||
-            s->codec_id == AV_CODEC_ID_JPEGLS) {
-            w_align =   8;
-            h_align = 2*8;
-        }
         break;
     case AV_PIX_FMT_BGR24:
         if ((s->codec_id == AV_CODEC_ID_MSZH) ||
@@ -521,14 +511,7 @@ static int64_t get_bit_rate(AVCodecContext *ctx)
         break;
     case AVMEDIA_TYPE_AUDIO:
         bits_per_sample = av_get_bits_per_sample(ctx->codec_id);
-        if (bits_per_sample) {
-            bit_rate = ctx->sample_rate * (int64_t)ctx->channels;
-            if (bit_rate > INT64_MAX / bits_per_sample) {
-                bit_rate = 0;
-            } else
-                bit_rate *= bits_per_sample;
-        } else
-            bit_rate = ctx->bit_rate;
+        bit_rate = bits_per_sample ? ctx->sample_rate * (int64_t)ctx->channels * bits_per_sample : ctx->bit_rate;
         break;
     default:
         bit_rate = 0;
@@ -620,7 +603,7 @@ int attribute_align_arg avcodec_open2(AVCodecContext *avctx, const AVCodec *code
             avctx->priv_data = av_mallocz(codec->priv_data_size);
             if (!avctx->priv_data) {
                 ret = AVERROR(ENOMEM);
-                goto free_and_end;
+                goto end;
             }
             if (codec->priv_class) {
                 *(const AVClass **)avctx->priv_data = codec->priv_class;
@@ -943,7 +926,6 @@ FF_ENABLE_DEPRECATION_WARNINGS
         || avci->frame_thread_encoder)) {
         ret = avctx->codec->init(avctx);
         if (ret < 0) {
-            codec_init_ok = -1;
             goto free_and_end;
         }
         codec_init_ok = 1;
@@ -1035,26 +1017,22 @@ end:
     return ret;
 free_and_end:
     if (avctx->codec && avctx->codec->close &&
-        (codec_init_ok > 0 || (codec_init_ok < 0 &&
-         avctx->codec->caps_internal & FF_CODEC_CAP_INIT_CLEANUP)))
+        (codec_init_ok ||
+         (avctx->codec->caps_internal & FF_CODEC_CAP_INIT_CLEANUP)))
         avctx->codec->close(avctx);
 
     if (HAVE_THREADS && avci->thread_ctx)
         ff_thread_free(avctx);
 
-    if (codec->priv_class && avctx->priv_data)
+    if (codec->priv_class && codec->priv_data_size)
         av_opt_free(avctx->priv_data);
     av_opt_free(avctx);
 
-    if (av_codec_is_encoder(avctx->codec)) {
 #if FF_API_CODED_FRAME
 FF_DISABLE_DEPRECATION_WARNINGS
     av_frame_free(&avctx->coded_frame);
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
-        av_freep(&avctx->extradata);
-        avctx->extradata_size = 0;
-    }
 
     av_dict_free(&tmp);
     av_freep(&avctx->priv_data);
@@ -1616,10 +1594,7 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
     case AV_CODEC_ID_MP1:          return  384;
     case AV_CODEC_ID_ATRAC1:       return  512;
     case AV_CODEC_ID_ATRAC9:
-    case AV_CODEC_ID_ATRAC3:
-        if (framecount > INT_MAX/1024)
-            return 0;
-        return 1024 * framecount;
+    case AV_CODEC_ID_ATRAC3:       return 1024 * framecount;
     case AV_CODEC_ID_ATRAC3P:      return 2048;
     case AV_CODEC_ID_MP2:
     case AV_CODEC_ID_MUSEPACK7:    return 1152;
@@ -1635,11 +1610,8 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
 
         if (ch > 0) {
             /* calc from sample rate and channels */
-            if (id == AV_CODEC_ID_BINKAUDIO_DCT) {
-                if (sr / 22050 > 22)
-                    return 0;
+            if (id == AV_CODEC_ID_BINKAUDIO_DCT)
                 return (480 << (sr / 22050)) / ch;
-            }
         }
 
         if (id == AV_CODEC_ID_MP3)
@@ -1685,10 +1657,7 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
                 return frame_bytes / (9 * ch) * 16;
             case AV_CODEC_ID_ADPCM_PSX:
             case AV_CODEC_ID_ADPCM_DTK:
-                frame_bytes /= 16 * ch;
-                if (frame_bytes > INT_MAX / 28)
-                    return 0;
-                return frame_bytes * 28;
+                return frame_bytes / (16 * ch) * 28;
             case AV_CODEC_ID_ADPCM_4XM:
             case AV_CODEC_ID_ADPCM_IMA_DAT4:
             case AV_CODEC_ID_ADPCM_IMA_ISS:
@@ -1700,7 +1669,7 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
             case AV_CODEC_ID_ADPCM_THP:
             case AV_CODEC_ID_ADPCM_THP_LE:
                 if (extradata)
-                    return frame_bytes * 14LL / (8 * ch);
+                    return frame_bytes * 14 / (8 * ch);
                 break;
             case AV_CODEC_ID_ADPCM_XA:
                 return (frame_bytes / 128) * 224 / ch;
@@ -1734,33 +1703,21 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
             if (ba > 0) {
                 /* calc from frame_bytes, channels, and block_align */
                 int blocks = frame_bytes / ba;
-                int64_t tmp = 0;
                 switch (id) {
                 case AV_CODEC_ID_ADPCM_IMA_WAV:
                     if (bps < 2 || bps > 5)
                         return 0;
-                    tmp = blocks * (1LL + (ba - 4 * ch) / (bps * ch) * 8);
-                    break;
+                    return blocks * (1 + (ba - 4 * ch) / (bps * ch) * 8);
                 case AV_CODEC_ID_ADPCM_IMA_DK3:
-                    tmp = blocks * (((ba - 16LL) * 2 / 3 * 4) / ch);
-                    break;
+                    return blocks * (((ba - 16) * 2 / 3 * 4) / ch);
                 case AV_CODEC_ID_ADPCM_IMA_DK4:
-                    tmp = blocks * (1 + (ba - 4LL * ch) * 2 / ch);
-                    break;
+                    return blocks * (1 + (ba - 4 * ch) * 2 / ch);
                 case AV_CODEC_ID_ADPCM_IMA_RAD:
-                    tmp = blocks * ((ba - 4LL * ch) * 2 / ch);
-                    break;
+                    return blocks * ((ba - 4 * ch) * 2 / ch);
                 case AV_CODEC_ID_ADPCM_MS:
-                    tmp = blocks * (2 + (ba - 7LL * ch) * 2LL / ch);
-                    break;
+                    return blocks * (2 + (ba - 7 * ch) * 2 / ch);
                 case AV_CODEC_ID_ADPCM_MTAF:
-                    tmp = blocks * (ba - 16LL) * 2 / ch;
-                    break;
-                }
-                if (tmp) {
-                    if (tmp != (int)tmp)
-                        return 0;
-                    return tmp;
+                    return blocks * (ba - 16) * 2 / ch;
                 }
             }
 
@@ -1798,22 +1755,20 @@ static int get_audio_frame_duration(enum AVCodecID id, int sr, int ch, int ba,
 
 int av_get_audio_frame_duration(AVCodecContext *avctx, int frame_bytes)
 {
-    int duration = get_audio_frame_duration(avctx->codec_id, avctx->sample_rate,
+    return get_audio_frame_duration(avctx->codec_id, avctx->sample_rate,
                                     avctx->channels, avctx->block_align,
                                     avctx->codec_tag, avctx->bits_per_coded_sample,
                                     avctx->bit_rate, avctx->extradata, avctx->frame_size,
                                     frame_bytes);
-    return FFMAX(0, duration);
 }
 
 int av_get_audio_frame_duration2(AVCodecParameters *par, int frame_bytes)
 {
-    int duration = get_audio_frame_duration(par->codec_id, par->sample_rate,
+    return get_audio_frame_duration(par->codec_id, par->sample_rate,
                                     par->channels, par->block_align,
                                     par->codec_tag, par->bits_per_coded_sample,
                                     par->bit_rate, par->extradata, par->frame_size,
                                     frame_bytes);
-    return FFMAX(0, duration);
 }
 
 #if !HAVE_THREADS
